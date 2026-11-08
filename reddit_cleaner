@@ -268,33 +268,14 @@
       }
 
       confirm.click();
-      clicked = true;
+      confirm.click();
+clicked = true;
 
-      say("Delete clicked. Verifying...");
+done++;
+count.textContent = "Delete clicks this session: " + done;
+say("Delete clicked. Tap again to delete next.");
 
-      let verified = false;
-
-      for (let i = 0; i < 20; i++) {
-        await sleep(250);
-
-        if (!item.el.isConnected || isDeleted(item.el)) {
-          verified = true;
-          break;
-        }
-      }
-
-      if (verified) {
-        done++;
-        count.textContent = "Deleted this session: " + done;
-        say("Deleted " + id + ". Tap again when ready.");
-      } else {
-        say(
-          "Delete clicked, but removal not verified. " +
-          "Check Reddit before continuing."
-        );
-      }
-
-    } catch (error) {
+} catch (error) {
       say(
         (clicked ? "Delete clicked; " : "Stopped; ") +
         error.message

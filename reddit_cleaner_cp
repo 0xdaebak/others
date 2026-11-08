@@ -1,0 +1,314 @@
+
+(() => {
+  const old = document.getElementById("reddit-delete-next-panel");
+  if (old) {
+    old.remove();
+    return;
+  }
+
+  const match = location.pathname.match(
+    /^\/user\/([^/]+)\/(comments|submitted)\/?$/
+  );
+
+  if (!match) {
+    alert("Open your Reddit profile Comments or Posts page first.");
+    return;
+  }
+
+  const username = decodeURIComponent(match[1]).toLowerCase();
+  const mode = match[2];
+
+  let busy = false;
+  let done = 0;
+
+  const attempted = new Set();
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+  function deep(root, selector) {
+    const found = root.querySelector(selector);
+    if (found) return found;
+
+    for (const element of root.querySelectorAll("*")) {
+      if (element.shadowRoot) {
+        const result = deep(element.shadowRoot, selector);
+        if (result) return result;
+      }
+    }
+    return null;
+  }
+
+  async function waitFor(fn, attempts = 25) {
+    for (let i = 0; i < attempts; i++) {
+      const result = fn();
+      if (result) return result;
+      await sleep(200);
+    }
+    return null;
+  }
+
+  const panel = document.createElement("div");
+  panel.id = "reddit-delete-next-panel";
+
+  panel.style.cssText = `
+    position: fixed;
+    z-index: 2147483647;
+    bottom: 18px;
+    left: 12px;
+    right: 12px;
+    max-width: 410px;
+    margin: auto;
+    background: white;
+    color: #111;
+    border: 2px solid #222;
+    border-radius: 15px;
+    padding: 15px;
+    box-shadow: 0 6px 24px #0005;
+    font: 14px system-ui, sans-serif;
+  `;
+
+  panel.innerHTML = `
+    <div style="font-size:17px;font-weight:700;margin-bottom:8px">
+      Reddit · Delete Next
+    </div>
+
+    <div id="rdn-status" style="margin-bottom:10px">
+      Ready
+    </div>
+
+    <div id="rdn-count" style="margin-bottom:10px">
+      Deleted this session: 0
+    </div>
+
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <button id="rdn-comments" style="flex:1;padding:9px">
+        Comments
+      </button>
+      <button id="rdn-posts" style="flex:1;padding:9px">
+        Posts
+      </button>
+    </div>
+
+    <div style="display:flex;gap:8px">
+      <button id="rdn-delete" style="
+        flex:1;
+        padding:12px;
+        background:#b42318;
+        color:white;
+        border:0;
+        border-radius:9px;
+        font-weight:700;
+      ">
+        Delete next
+      </button>
+
+      <button id="rdn-close" style="padding:12px">
+        Close
+      </button>
+    </div>
+  `;
+
+  document.body.append(panel);
+
+  const status = panel.querySelector("#rdn-status");
+  const count = panel.querySelector("#rdn-count");
+  const button = panel.querySelector("#rdn-delete");
+
+  const say = message => {
+    status.textContent = message;
+  };
+
+  panel.querySelector("#rdn-comments").onclick = () => {
+    location.assign(
+      "/user/" + encodeURIComponent(match[1]) + "/comments/"
+    );
+  };
+
+  panel.querySelector("#rdn-posts").onclick = () => {
+    location.assign(
+      "/user/" + encodeURIComponent(match[1]) + "/submitted/"
+    );
+  };
+
+  panel.querySelector("#rdn-close").onclick = () => {
+    if (busy) {
+      say("Wait until the current action finishes.");
+      return;
+    }
+    panel.remove();
+  };
+
+  function isDeleted(element) {
+    const label =
+      element.closest("article")?.getAttribute("aria-label") || "";
+
+    return /\[deleted by user\]|\[removed\]|\[deleted\]/i.test(label);
+  }
+
+  function pickComment() {
+    return [...document.querySelectorAll("shreddit-profile-comment")]
+      .map(element => ({
+        el: element,
+        menu: element.querySelector(
+          "shreddit-overflow-menu[is-comment-author]"
+        ),
+        id: element.getAttribute("comment-id")
+      }))
+      .find(item =>
+        item.id &&
+        item.menu?.getAttribute("author-name")?.toLowerCase() === username &&
+        !attempted.has(item.id) &&
+        !isDeleted(item.el)
+      );
+  }
+
+  function pickPost() {
+    return [
+      ...document.querySelectorAll(
+        "shreddit-post, shreddit-profile-post"
+      )
+    ]
+      .map(element => ({
+        el: element,
+        menu: element.querySelector("shreddit-overflow-menu"),
+        id:
+          element.getAttribute("id") ||
+          element.getAttribute("post-id") ||
+          element.getAttribute("data-post-id")
+      }))
+      .find(item =>
+        item.menu &&
+        item.id &&
+        !attempted.has(item.id) &&
+        !isDeleted(item.el) &&
+        (
+          !item.menu.getAttribute("author-name") ||
+          item.menu.getAttribute("author-name").toLowerCase() === username
+        )
+      );
+  }
+
+  function deleteOption(menu, kind) {
+    if (!menu.shadowRoot) return null;
+
+    const candidates = [
+      ...menu.shadowRoot.querySelectorAll(
+        'li[role="menuitem"], button, [role="menuitem"]'
+      )
+    ];
+
+    return candidates.find(element =>
+      new RegExp("^Delete " + kind + "$", "i")
+        .test((element.textContent || "").trim())
+    ) || null;
+  }
+
+  button.onclick = async () => {
+    if (busy) return;
+
+    busy = true;
+    button.disabled = true;
+    button.style.opacity = "0.5";
+
+    let id = "";
+    let clicked = false;
+
+    try {
+      const kind = mode === "comments" ? "comment" : "post";
+      const item = kind === "comment"
+        ? pickComment()
+        : pickPost();
+
+      if (!item) {
+        say(
+          "No eligible " + kind +
+          " found. Scroll to load more, then try again."
+        );
+        return;
+      }
+
+      id = item.id;
+
+      const trigger = item.menu.shadowRoot?.querySelector(
+        "#overflow-trigger"
+      );
+
+      if (!trigger) {
+        throw Error("Three-dot menu not found. Nothing deleted.");
+      }
+
+      attempted.add(id);
+
+      say("Opening " + kind + " menu...");
+      trigger.click();
+
+      const option = await waitFor(
+        () => deleteOption(item.menu, kind)
+      );
+
+      if (!option) {
+        throw Error("Delete " + kind + " option not found.");
+      }
+
+      const action =
+        option.querySelector("div[tabindex],button,a") || option;
+
+      action.click();
+
+      say("Waiting for Delete confirmation...");
+
+      const confirm = await waitFor(
+        () => deep(document, '#deleteBtn[slot="primary-button"]')
+      );
+
+      if (
+        !confirm ||
+        !/delete/i.test(confirm.textContent || "")
+      ) {
+        throw Error("Final confirmation not found.");
+      }
+
+      confirm.click();
+      clicked = true;
+
+      say("Delete clicked. Verifying...");
+
+      let verified = false;
+
+      for (let i = 0; i < 20; i++) {
+        await sleep(250);
+
+        if (!item.el.isConnected || isDeleted(item.el)) {
+          verified = true;
+          break;
+        }
+      }
+
+      if (verified) {
+        done++;
+        count.textContent = "Deleted this session: " + done;
+        say("Deleted " + id + ". Tap again when ready.");
+      } else {
+        say(
+          "Delete clicked, but removal not verified. " +
+          "Check Reddit before continuing."
+        );
+      }
+
+    } catch (error) {
+      say(
+        (clicked ? "Delete clicked; " : "Stopped; ") +
+        error.message
+      );
+    } finally {
+      busy = false;
+      button.disabled = false;
+      button.style.opacity = "1";
+    }
+  };
+
+  say(
+    mode === "comments"
+      ? "Comments mode: one tap deletes one comment."
+      : "Posts mode: experimental."
+  );
+})();
